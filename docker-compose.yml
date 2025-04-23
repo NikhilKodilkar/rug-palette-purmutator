@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app/frontend
+      - /app/frontend/node_modules
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - api
+    networks:
+      - rugapp-net
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./api:/app/api
+      - media_volume:/app/media
+      - /app/api/node_modules
+    environment:
+      - NODE_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_PATH=/app/media/database.sqlite
+      - MEDIA_PATH=/app/media
+    depends_on:
+      - redis
+    networks:
+      - rugapp-net
+
+  cv-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cv-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cv-service:/app/cv-service
+      - media_volume:/app/media
+    environment:
+      - MEDIA_PATH=/app/media
+    networks:
+      - rugapp-net
+
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - rugapp-net
+
+volumes:
+  media_volume:
+  redis_data:
+
+networks:
+  rugapp-net:
+    driver: bridge

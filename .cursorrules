@@ -1,0 +1,12 @@
+# Cursor Rules – Rug Palette Permutator
+
+- **Reference**: follow _BEST-PRACTICES.md_ at all times.
+- **Scope small**: every edit should tackle one intent only. Prefer  ⌀ < 10 LOC diffs.
+- **Keep architecture simple**: no extra layers beyond the Option B diagram in README.
+- **Type safety** mandatory: TypeScript `strict`, Python `mypy --strict`.
+- **No dead‑code**: remove unused imports & assets immediately.
+- **Document fixes**: any bug you squash ➜ add an entry to **TS.md** before closing the PR.
+- **Lint passes**: commits must satisfy `npm run lint` & `pytest -q`.
+- **Stay container‑ready**: code should always build via `docker compose up --build`.
+- **Tests first** (when feasible): red → green → refactor.
+- **Minimal external deps**: prefer stdlib / built‑in before adding a package.

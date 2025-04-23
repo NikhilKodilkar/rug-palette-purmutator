@@ -1,0 +1,111 @@
+.App {
+  text-align: center;
+  font-family: sans-serif;
+}
+
+.App-header {
+  background-color: #282c34;
+  padding: 20px;
+  color: white;
+  margin-bottom: 30px;
+}
+
+.file-upload-container {
+  max-width: 500px;
+  margin: 30px auto;
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+
+.dropzone {
+  border: 2px dashed #007bff;
+  border-radius: 5px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border .24s ease-in-out;
+}
+
+.dropzone.active {
+  border-color: #28a745;
+}
+
+.error-message {
+  color: red;
+  margin-top: 15px;
+  font-weight: bold;
+}
+
+.results-container {
+  max-width: 1200px;
+  margin: 30px auto;
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+
+.image-container {
+  display: flex;
+  justify-content: space-around;
+  margin-bottom: 30px;
+  gap: 20px;
+}
+
+.original-image,
+.segmented-view {
+  flex: 1;
+  max-width: 500px;
+}
+
+.rug-image {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.segmented-image {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.base-image {
+  display: block;
+}
+
+.segment-overlay {
+  pointer-events: none;
+}
+
+.segments, .dominant-colors {
+  margin: 20px 0;
+}
+
+.segment-list, .color-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  justify-content: center;
+  margin-top: 15px;
+}
+
+.segment-item, .color-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.color-preview {
+  width: 50px;
+  height: 50px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+}
+
+h2, h3 {
+  color: #333;
+  margin: 10px 0;
+}

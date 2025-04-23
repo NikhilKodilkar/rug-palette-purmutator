@@ -1,0 +1,10 @@
+﻿FROM node:20-alpine AS base
+WORKDIR /app/api
+
+COPY api/package.json api/package-lock.json* ./
+RUN npm ci --include=dev
+
+COPY api/ .
+
+EXPOSE 3000
+CMD ["npm", "run", "dev"]
