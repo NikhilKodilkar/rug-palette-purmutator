@@ -117,4 +117,19 @@ function App() {
                 {uploadResult.dominant_colors.map((color, index) => (
                   <div key={index} className="color-item">
                     <div 
-          
+                      className="color-preview" 
+                      style={{ backgroundColor: color }}
+                    />
+                    <span>{color}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+export default App;
