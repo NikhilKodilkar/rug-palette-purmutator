@@ -2,10 +2,16 @@ import React, { useState } from 'react';
 import FileUpload from './components/FileUpload';
 import './App.css';
 
+interface Point {
+  x: number;
+  y: number;
+}
+
 interface Segment {
   id: number;
   color: string;
   area: number;
+  mask: Point[];
 }
 
 interface UploadResponse {
@@ -44,6 +50,50 @@ function App() {
     }
   }, [uploadResult]);
 
+  const drawSegments = (canvas: HTMLCanvasElement, img: HTMLImageElement, segments: Segment[]) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Set canvas size to match image
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    // Draw original image
+    ctx.drawImage(img, 0, 0);
+
+    // Draw each segment as a polygon with semi-transparent fill
+    segments.forEach(segment => {
+      if (segment.mask.length < 3) return; // Need at least 3 points for a polygon
+
+      ctx.beginPath();
+      // Move to first point
+      ctx.moveTo(
+        segment.mask[0].x * canvas.width,
+        segment.mask[0].y * canvas.height
+      );
+      
+      // Draw lines to subsequent points
+      for (let i = 1; i < segment.mask.length; i++) {
+        ctx.lineTo(
+          segment.mask[i].x * canvas.width,
+          segment.mask[i].y * canvas.height
+        );
+      }
+      
+      // Close the path
+      ctx.closePath();
+
+      // Fill with semi-transparent color
+      ctx.fillStyle = segment.color + '80'; // Add 50% transparency
+      ctx.fill();
+
+      // Draw border
+      ctx.strokeStyle = segment.color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -72,22 +122,9 @@ function App() {
                   <canvas
                     ref={(canvas) => {
                       if (canvas && uploadResult) {
-                        const ctx = canvas.getContext('2d');
                         const img = new Image();
                         img.onload = () => {
-                          canvas.width = img.width;
-                          canvas.height = img.height;
-                          ctx?.drawImage(img, 0, 0);
-                          
-                          // Apply segments as color overlays
-                          if (ctx) {
-                            ctx.globalCompositeOperation = 'multiply';
-                            uploadResult.segments.forEach(segment => {
-                              ctx.fillStyle = segment.color;
-                              ctx.globalAlpha = 0.5;
-                              ctx.fillRect(0, 0, canvas.width, canvas.height * segment.area);
-                            });
-                          }
+                          drawSegments(canvas, img, uploadResult.segments);
                         };
                         img.src = `http://localhost:3001/media/${uploadResult.filename}`;
                       }
