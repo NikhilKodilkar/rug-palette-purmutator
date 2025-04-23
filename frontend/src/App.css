@@ -70,6 +70,7 @@
   border-radius: 8px;
   overflow: hidden;
   background-color: #f5f5f5;
+  position: relative;
 }
 
 .segmented-image canvas {
@@ -77,6 +78,7 @@
   width: 100%;
   height: auto;
   border-radius: 8px;
+  cursor: pointer;
 }
 
 .segments, .dominant-colors {
@@ -100,6 +102,15 @@
   border: 1px solid #eee;
   border-radius: 8px;
   background-color: white;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.segment-item:hover,
+.segment-item.hovered {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  border-color: #007bff;
 }
 
 .color-preview {
@@ -107,9 +118,25 @@
   height: 50px;
   border-radius: 8px;
   border: 1px solid #ccc;
+  transition: transform 0.2s ease;
+}
+
+.segment-item:hover .color-preview,
+.segment-item.hovered .color-preview {
+  transform: scale(1.1);
 }
 
 h2, h3 {
   color: #333;
   margin: 10px 0;
+}
+
+.segment-item span {
+  font-size: 0.9em;
+  color: #666;
+}
+
+.segment-item:hover span,
+.segment-item.hovered span {
+  color: #007bff;
 }

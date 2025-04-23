@@ -24,6 +24,7 @@ interface UploadResponse {
 
 function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
+  const [hoveredSegment, setHoveredSegment] = useState<number | null>(null);
 
   const handleUploadSuccess = (responseData: UploadResponse) => {
     console.log('[Frontend] Raw data received from backend:', responseData);
@@ -83,15 +84,73 @@ function App() {
       // Close the path
       ctx.closePath();
 
-      // Fill with semi-transparent color
-      ctx.fillStyle = segment.color + '80'; // Add 50% transparency
+      // Fill with semi-transparent color, darker if hovered
+      const alpha = hoveredSegment === segment.id ? 'B0' : '80'; // 70% or 50% opacity
+      ctx.fillStyle = segment.color + alpha;
       ctx.fill();
 
       // Draw border
       ctx.strokeStyle = segment.color;
       ctx.lineWidth = 2;
       ctx.stroke();
+
+      // Add segment ID text
+      const centroid = segment.mask.reduce(
+        (acc, point) => ({
+          x: acc.x + point.x / segment.mask.length,
+          y: acc.y + point.y / segment.mask.length
+        }),
+        { x: 0, y: 0 }
+      );
+
+      ctx.fillStyle = 'white';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = 3;
+      ctx.font = '16px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const text = segment.id.toString();
+      const x = centroid.x * canvas.width;
+      const y = centroid.y * canvas.height;
+      
+      // Draw text with outline for better visibility
+      ctx.strokeText(text, x, y);
+      ctx.fillText(text, x, y);
     });
+  };
+
+  const handleCanvasMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!uploadResult) return;
+
+    const canvas = event.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / canvas.clientWidth;
+    const y = (event.clientY - rect.top) / canvas.clientHeight;
+
+    // Find segment under cursor
+    const hoveredSegment = uploadResult.segments.find(segment => {
+      return isPointInPolygon({ x, y }, segment.mask);
+    });
+
+    setHoveredSegment(hoveredSegment?.id ?? null);
+  };
+
+  const handleCanvasMouseLeave = () => {
+    setHoveredSegment(null);
+  };
+
+  // Helper function to check if a point is inside a polygon
+  const isPointInPolygon = (point: Point, polygon: Point[]): boolean => {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      
+      const intersect = ((yi > point.y) !== (yj > point.y))
+          && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
   };
 
   return (
@@ -129,27 +188,34 @@ function App() {
                         img.src = `http://localhost:3001/media/${uploadResult.filename}`;
                       }
                     }}
+                    onMouseMove={handleCanvasMouseMove}
+                    onMouseLeave={handleCanvasMouseLeave}
                     className="rug-image"
                   />
                 </div>
               </div>
             </div>
-            <div className="segments">
-              <h3>Segments</h3>
-              <div className="segment-list">
-                {uploadResult.segments.map((segment) => (
-                  <div key={segment.id} className="segment-item">
-                    <div 
-                      className="color-preview" 
-                      style={{ backgroundColor: segment.color }}
-                    />
-                    <span>Area: {(segment.area * 100).toFixed(1)}%</span>
-                  </div>
-                ))}
-              </div>
+            
+            <h3>Segments</h3>
+            <div className="segment-list">
+              {uploadResult.segments.map((segment) => (
+                <div 
+                  key={segment.id} 
+                  className={`segment-item ${hoveredSegment === segment.id ? 'hovered' : ''}`}
+                  onMouseEnter={() => setHoveredSegment(segment.id)}
+                  onMouseLeave={() => setHoveredSegment(null)}
+                >
+                  <div 
+                    className="color-preview" 
+                    style={{ backgroundColor: segment.color }}
+                  />
+                  <span>ID: {segment.id}</span>
+                  <span>Area: {(segment.area * 100).toFixed(1)}%</span>
+                </div>
+              ))}
             </div>
             <div className="dominant-colors">
-              <h3>Dominant Colors</h3>
+              <h3>Dominant Colors ({uploadResult.dominant_colors.length}) - {uploadResult.segments.length} segments found</h3>
               <div className="color-list">
                 {uploadResult.dominant_colors.map((color, index) => (
                   <div key={index} className="color-item">
