@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 import os
 from dotenv import load_dotenv
 from loguru import logger
@@ -9,11 +9,13 @@ import numpy as np
 from PIL import Image
 import cv2
 import io
-from typing import List, Dict
+from typing import List, Dict, Optional
 import torch
-from segment_anything import sam_model_registry, SamPredictor
+from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
 from sklearn.cluster import KMeans
 import colorsys
+import time
+import uuid
 
 # Configure logger to show timestamps
 logger.remove()
@@ -27,10 +29,16 @@ app = FastAPI()
 BASE_DIR = Path(__file__).parent
 PROJECT_ROOT = BASE_DIR.parent
 
+# Get media path from environment or use default
+MEDIA_PATH = Path(os.getenv("MEDIA_PATH", str(PROJECT_ROOT / "api" / "media")))
+if not MEDIA_PATH.exists():
+    MEDIA_PATH.mkdir(parents=True, exist_ok=True)
+logger.info(f"Using media path: {MEDIA_PATH}")
+
 # Test image path
 TEST_IMAGE_PATH = PROJECT_ROOT / "block-colors-01.jpg"
 
-# Initialize SAM
+# Initialize SAM and MaskGenerator
 try:
     CHECKPOINT_PATH = BASE_DIR / "models" / "sam_vit_h_4b8939.pth"
     if not CHECKPOINT_PATH.exists():
@@ -43,26 +51,51 @@ try:
     sam = sam_model_registry["vit_h"](checkpoint=str(CHECKPOINT_PATH))
     sam.to(device=DEVICE)
     predictor = SamPredictor(sam)
-    logger.info("SAM model initialized successfully")
+    
+    # Initialize Automatic Mask Generator with optimized parameters
+    mask_generator = SamAutomaticMaskGenerator(
+        model=sam,
+        points_per_side=32,
+        pred_iou_thresh=0.88,
+        stability_score_thresh=0.95,
+        min_mask_region_area=100
+    )
+    logger.info("SAM model and MaskGenerator initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize SAM model: {str(e)}")
     raise
 
+# Configuration
+MAX_IMAGE_SIZE = 4096  # Maximum dimension of input image
+MIN_IMAGE_SIZE = 100   # Minimum dimension of input image
+SEGMENTATION_CONFIG = {
+    "points_per_side": 32,
+    "pred_iou_thresh": 0.88,
+    "stability_score_thresh": 0.95,
+    "min_mask_region_area": 100,
+    "min_relative_area": 0.01  # Minimum segment area relative to image
+}
+
 class Point(BaseModel):
-    x: float  # Normalized 0-1
-    y: float  # Normalized 0-1
+    x: float = Field(..., ge=0.0, le=1.0)  # Normalized 0-1
+    y: float = Field(..., ge=0.0, le=1.0)  # Normalized 0-1
 
 class Segment(BaseModel):
-    id: int
-    color: str
-    area: float
+    id: int = Field(..., gt=0)
+    color: str = Field(..., pattern="^#[0-9a-fA-F]{6}$")  # Hex color validation
+    area: float = Field(..., gt=0.0, le=1.0)  # Normalized area
     mask: List[Point]  # Polygon vertices defining the segment
+    score: float = Field(..., ge=0.0, le=1.0)  # IoU score
+
+    @validator('score')
+    def clamp_score(cls, v):
+        return min(v, 1.0)  # Clamp score to maximum of 1.0
 
 class SegmentationResponse(BaseModel):
     message: str
     segments: List[Segment]
     dominant_colors: List[str]
-    debug_image_path: str = ""  # Path to debug visualization
+    debug_image_path: str = ""
 
 class HealthCheck(BaseModel):
     status: str = "OK"
@@ -74,8 +107,11 @@ def rgb_to_hex(rgb):
 
 def get_dominant_colors(image: np.ndarray, n_colors: int = 3) -> List[str]:
     """Extract dominant colors from image using K-means clustering."""
+    # Convert BGR to RGB first
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
     # Reshape image to be a list of pixels
-    pixels = image.reshape(-1, 3)
+    pixels = image_rgb.reshape(-1, 3)
     
     # Perform k-means clustering
     kmeans = KMeans(n_clusters=n_colors, random_state=42)
@@ -90,7 +126,7 @@ def get_dominant_colors(image: np.ndarray, n_colors: int = 3) -> List[str]:
     return hex_colors
 
 def create_debug_visualization(image: np.ndarray, segments: List[Dict], output_path: str) -> str:
-    """Create a debug visualization of the segments."""
+    """Create an enhanced debug visualization of the segments."""
     # Create a copy of the image for visualization
     debug_image = image.copy()
     overlay = debug_image.copy()
@@ -104,128 +140,145 @@ def create_debug_visualization(image: np.ndarray, segments: List[Dict], output_p
             y = int(point["y"] * image.shape[0])
             points.append([x, y])
         
-        # Convert points to numpy array
         points = np.array(points, dtype=np.int32)
         
-        # Draw filled contour with segment color
-        color = tuple(int(segment["color"][i:i+2], 16) for i in (1, 3, 5))  # Convert hex to BGR
+        # Use segment's actual color
+        hex_color = segment["color"]
+        color = tuple(int(hex_color[i:i+2], 16) for i in (1, 3, 5))  # Convert hex to BGR
+        
+        # Draw filled contour with semi-transparency
         cv2.fillPoly(overlay, [points], color)
         
-        # Draw border in white for visibility
+        # Draw border
         cv2.polylines(debug_image, [points], True, (255, 255, 255), 2)
         
-        # Add segment ID with outline for better visibility
+        # Add segment info with outline for better visibility
         centroid = points.mean(axis=0).astype(int)
+        text = f"{segment['id']} ({segment['score']:.2f})"
+        
         # Draw text outline
-        cv2.putText(debug_image, str(segment["id"]), tuple(centroid), 
+        cv2.putText(debug_image, text, tuple(centroid), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
         # Draw text in white
-        cv2.putText(debug_image, str(segment["id"]), tuple(centroid), 
+        cv2.putText(debug_image, text, tuple(centroid), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 1)
     
     # Blend the filled overlay with the original image
     cv2.addWeighted(overlay, 0.5, debug_image, 0.5, 0, debug_image)
     
     # Save debug image
-    cv2.imwrite(output_path, debug_image)
-    return output_path
+    cv2.imwrite(str(output_path), debug_image)
+    return str(output_path)
+
+def validate_image(image: np.ndarray) -> None:
+    """Validate image dimensions and content."""
+    if image is None:
+        raise HTTPException(status_code=400, detail="Invalid image data")
+        
+    h, w = image.shape[:2]
+    if h < MIN_IMAGE_SIZE or w < MIN_IMAGE_SIZE:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Image too small. Minimum dimension is {MIN_IMAGE_SIZE}px"
+        )
+    if h > MAX_IMAGE_SIZE or w > MAX_IMAGE_SIZE:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Image too large. Maximum dimension is {MAX_IMAGE_SIZE}px"
+        )
+
+def get_unique_path(base_path: Path, suffix: str) -> Path:
+    """Generate unique file path to avoid overwrites."""
+    if not base_path.exists():
+        return base_path
+    
+    stem = base_path.stem
+    parent = base_path.parent
+    unique_id = str(uuid.uuid4())[:8]
+    return parent / f"{stem}_{unique_id}{suffix}"
+
+def cleanup_old_files(directory: Path, pattern: str, max_age_hours: int = 24) -> None:
+    """Clean up old debug files."""
+    try:
+        current_time = time.time()
+        for file in directory.glob(pattern):
+            if (current_time - file.stat().st_mtime) > max_age_hours * 3600:
+                file.unlink()
+    except Exception as e:
+        logger.warning(f"Failed to cleanup old files: {e}")
 
 def find_contours(image: np.ndarray) -> List[Dict]:
-    """Find segments in the image using SAM."""
-    # Convert BGR to RGB
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    # Set image in predictor
-    predictor.set_image(image_rgb)
-    
-    # Generate automatic mask proposals using points
-    h, w = image.shape[:2]
-    points_per_side = 32
-    points_y = np.linspace(0, h-1, points_per_side)
-    points_x = np.linspace(0, w-1, points_per_side)
-    points = []
-    for x in points_x:
-        for y in points_y:
-            points.append([x, y])
-    points = np.array(points)
-    
-    # Reshape points to match expected input shape [N, 2]
-    input_points = points.reshape(-1, 2)
-    input_labels = np.ones(len(input_points))
-    
-    # Get predictions for all points
-    masks = []
-    scores = []
-    
-    # Process points in batches
-    batch_size = 64
-    for i in range(0, len(input_points), batch_size):
-        batch_points = input_points[i:i+batch_size]
-        batch_labels = input_labels[i:i+batch_size]
+    """Find segments in the image using SAM's Automatic Mask Generator."""
+    try:
+        # Convert BGR to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w = image.shape[:2]
         
-        # Prepare input tensors with correct dimensions
-        point_coords = torch.from_numpy(batch_points).unsqueeze(0)  # Add batch dimension [1, N, 2]
-        point_labels = torch.from_numpy(batch_labels).unsqueeze(0)  # Add batch dimension [1, N]
+        # Generate masks automatically
+        logger.info("Starting automatic mask generation...")
+        start_time = time.time()
+        masks_data = mask_generator.generate(image_rgb)
+        end_time = time.time()
+        logger.info(f"Automatic mask generation finished in {end_time - start_time:.2f} seconds")
+        logger.info(f"Generated {len(masks_data)} raw masks")
         
-        # Get predictions
-        masks_batch, scores_batch, _ = predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            multimask_output=False  # Get single best mask per point
-        )
+        segments = []
+        total_area = h * w
         
-        # Convert tensors to numpy and add batch results to full list
-        masks.extend([m.cpu().numpy() for m in masks_batch])
-        scores.extend([s.mean().cpu().item() for s in scores_batch])
-    
-    segments = []
-    total_area = image.shape[0] * image.shape[1]
-    
-    # Process each mask
-    for i, (mask, score) in enumerate(zip(masks, scores)):
-        if score < 0.5:  # Filter low confidence masks
-            continue
+        for i, mask_info in enumerate(masks_data):
+            mask = mask_info['segmentation']
+            score = mask_info['predicted_iou']
+            area = mask_info['area']
             
-        # Convert mask to uint8 (mask is already numpy array now)
-        mask_uint8 = (mask > 0).astype(np.uint8) * 255
-        
-        # Find contours in the mask
-        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < total_area * 0.01:  # Skip tiny segments
+            # Filter by relative area
+            if area < total_area * SEGMENTATION_CONFIG["min_relative_area"]:
                 continue
                 
-            # Create mask for this contour
-            contour_mask = np.zeros_like(mask_uint8)
-            cv2.drawContours(contour_mask, [contour], -1, 255, -1)
+            logger.info(f"Processing segment {i}: Area={area}, Predicted IoU={score:.3f}")
             
-            # Get mean color from the original image using this mask
-            mean_color = cv2.mean(image, mask=contour_mask)[:3]
+            # Find contours in the mask
+            mask_uint8 = mask.astype(np.uint8) * 255
+            contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # Simplify contour
-            epsilon = 0.005 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            
-            # Convert contour points to normalized coordinates
-            points = []
-            for point in approx:
-                x = float(point[0][0]) / image.shape[1]
-                y = float(point[0][1]) / image.shape[0]
-                points.append({"x": x, "y": y})
-            
-            # Only add if we have enough points for a polygon
-            if len(points) >= 3:
-                segments.append({
-                    "id": len(segments) + 1,
-                    "color": rgb_to_hex(mean_color),
-                    "area": float(area) / total_area,
-                    "mask": points
-                })
-    
-    logger.info("CV Service: Found {} segments", len(segments))
-    return segments
+            for contour in contours:
+                # Simplify contour
+                epsilon = 0.005 * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+                
+                # Convert to normalized coordinates and validate points
+                points = []
+                for point in approx:
+                    x = float(point[0][0]) / w
+                    y = float(point[0][1]) / h
+                    # Validate point through model
+                    point_model = Point(x=x, y=y)
+                    points.append(point_model)
+                
+                # Calculate mean color for the segment
+                mask_3d = np.stack([mask] * 3, axis=2)
+                segment_pixels = image_rgb[mask]
+                mean_color = segment_pixels.mean(axis=0)
+                hex_color = rgb_to_hex(mean_color)
+                
+                # Create and validate segment through model
+                segment = Segment(
+                    id=len(segments) + 1,
+                    color=hex_color,
+                    area=float(area) / total_area,
+                    mask=points,
+                    score=min(float(score), 1.0)  # Clamp score to 1.0 before validation
+                )
+                segments.append(segment.dict())  # Store as dict for serialization
+        
+        logger.info(f"Found {len(segments)} segments after filtering")
+        return segments
+        
+    except Exception as e:
+        logger.error(f"Segmentation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
+    finally:
+        # Cleanup to help with memory
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
 @app.get("/")
 def read_root() -> HealthCheck:
@@ -245,95 +298,86 @@ def read_root() -> HealthCheck:
 async def test_segmentation():
     """Test endpoint using block-colors-01.jpg."""
     try:
-        logger.info("CV Service: Running test segmentation with block-colors-01.jpg")
+        logger.info(f"Running test segmentation with {TEST_IMAGE_PATH}")
         
         if not TEST_IMAGE_PATH.exists():
-            logger.error("CV Service: Test image not found at: {}", TEST_IMAGE_PATH)
             raise HTTPException(status_code=404, detail="Test image not found")
             
-        # Read image using OpenCV
         image = cv2.imread(str(TEST_IMAGE_PATH))
         if image is None:
             raise HTTPException(status_code=400, detail="Failed to read test image")
         
-        # Convert BGR to RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
         # Find segments
         segments = find_contours(image)
-        logger.info("CV Service: Found {} segments in test image", len(segments))
         
-        # Extract dominant colors
-        dominant_colors = get_dominant_colors(image_rgb)
-        logger.info("CV Service: Extracted {} dominant colors from test image", len(dominant_colors))
+        # Get dominant colors
+        dominant_colors = get_dominant_colors(image)
+        
+        # Create debug visualization
+        debug_path = TEST_IMAGE_PATH.with_suffix('.debug.jpg')
+        create_debug_visualization(image, segments, debug_path)
         
         response = SegmentationResponse(
-            message="Test segmentation completed",
-            segments=segments,
-            dominant_colors=dominant_colors
+            message=f"Successfully segmented test image into {len(segments)} regions",
+            segments=[Segment(**s) for s in segments],  # Validate against model
+            dominant_colors=dominant_colors,
+            debug_image_path=str(debug_path)
         )
         
-        logger.info("CV Service: Sending test response")
+        logger.info(f"Test complete. Found {len(segments)} segments.")
         return response.dict()
         
     except Exception as e:
-        logger.error("CV Service: Error during test segmentation: {}", str(e))
+        logger.error(f"Test segmentation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/segment")
 async def segment_image(file_path: str):
-    """Segment the image and extract dominant colors."""
+    """Segment an uploaded image."""
     try:
-        logger.info("CV Service: Received segmentation request for file: {}", file_path)
-        
-        # Get the configured media path
-        media_path = Path(os.getenv("MEDIA_PATH", str(BASE_DIR / "media"))).resolve()
-        image_path = media_path / file_path
-        
-        logger.info("CV Service: Looking for image at: {}", image_path)
-        if not image_path.exists():
-            if media_path.exists():
-                available_files = os.listdir(media_path)
-                logger.error("CV Service: Image not found. Available files in media directory: {}", available_files)
-            else:
-                logger.error("CV Service: Media directory not found at: {}", media_path)
-            raise HTTPException(status_code=404, detail="Image file not found")
+        # Convert to Path object and ensure it's in the media directory
+        file_path = MEDIA_PATH / Path(file_path).name
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
             
-        logger.info("CV Service: Image found, starting segmentation...")
+        # Read and validate image
+        image = cv2.imread(str(file_path))
+        validate_image(image)
         
-        # Read image using OpenCV
-        image = cv2.imread(str(image_path))
-        if image is None:
-            raise HTTPException(status_code=400, detail="Failed to read image")
-        
-        # Convert BGR to RGB for color processing
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        logger.info(f"Processing image: {file_path}")
+        logger.info(f"Image shape: {image.shape}")
         
         # Find segments
         segments = find_contours(image)
-        logger.info("CV Service: Found {} segments", len(segments))
         
-        # Extract dominant colors
-        dominant_colors = get_dominant_colors(image_rgb)
-        logger.info("CV Service: Extracted {} dominant colors", len(dominant_colors))
+        # Get dominant colors
+        dominant_colors = get_dominant_colors(image)
         
-        # Create debug visualization
-        debug_image_path = str(image_path).replace(".jpg", "_debug.jpg")
-        create_debug_visualization(image, segments, debug_image_path)
-        logger.info("CV Service: Created debug visualization at: {}", debug_image_path)
+        # Create debug visualization with unique path
+        debug_path = get_unique_path(
+            file_path.with_suffix('.debug.jpg'),
+            '.jpg'
+        )
+        create_debug_visualization(image, segments, debug_path)
         
+        # Cleanup old debug files
+        cleanup_old_files(debug_path.parent, "*.debug.jpg")
+        
+        # Create response
         response = SegmentationResponse(
-            message="Segmentation completed",
-            segments=segments,
+            message=f"Successfully segmented image into {len(segments)} regions",
+            segments=[Segment(**s) for s in segments],
             dominant_colors=dominant_colors,
-            debug_image_path=os.path.basename(debug_image_path)
+            debug_image_path=str(debug_path)
         )
         
-        logger.info("CV Service: Sending response back to API")
+        logger.info(f"Segmentation complete. Found {len(segments)} segments.")
+        logger.info(f"Debug visualization saved to: {debug_path}")
+        
         return response.dict()
         
     except Exception as e:
-        logger.error("CV Service: Error during segmentation: {}", str(e))
+        logger.error(f"Segmentation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
