@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import FileUpload from './components/FileUpload';
 import './App.css';
 
@@ -10,8 +10,9 @@ interface Point {
 interface Segment {
   id: number;
   color: string;
-  area: number;
+  area: number;  // Normalized area (0-1)
   mask: Point[];
+  pixelArea?: number;  // Actual pixel area
 }
 
 interface UploadResponse {
@@ -22,9 +23,17 @@ interface UploadResponse {
   dominant_colors: string[];
 }
 
+interface TooltipPosition {
+  x: number;
+  y: number;
+}
+
 function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [hoveredSegment, setHoveredSegment] = useState<number | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState<TooltipPosition | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
 
   const handleUploadSuccess = (responseData: UploadResponse) => {
     console.log('[Frontend] Raw data received from backend:', responseData);
@@ -58,22 +67,21 @@ function App() {
     // Set canvas size to match image
     canvas.width = img.width;
     canvas.height = img.height;
+    setImageSize({ width: img.width, height: img.height });
 
     // Draw original image
     ctx.drawImage(img, 0, 0);
 
-    // Draw each segment as a polygon with semi-transparent fill
+    // Draw each segment with its color (no hover effect here)
     segments.forEach(segment => {
-      if (segment.mask.length < 3) return; // Need at least 3 points for a polygon
+      if (segment.mask.length < 3) return;
 
       ctx.beginPath();
-      // Move to first point
       ctx.moveTo(
         segment.mask[0].x * canvas.width,
         segment.mask[0].y * canvas.height
       );
       
-      // Draw lines to subsequent points
       for (let i = 1; i < segment.mask.length; i++) {
         ctx.lineTo(
           segment.mask[i].x * canvas.width,
@@ -81,12 +89,10 @@ function App() {
         );
       }
       
-      // Close the path
       ctx.closePath();
 
-      // Fill with semi-transparent color, darker if hovered
-      const alpha = hoveredSegment === segment.id ? 'B0' : '80'; // 70% or 50% opacity
-      ctx.fillStyle = segment.color + alpha;
+      // Fill with semi-transparent color
+      ctx.fillStyle = segment.color + '80'; // 50% opacity
       ctx.fill();
 
       // Draw border
@@ -113,7 +119,6 @@ function App() {
       const x = centroid.x * canvas.width;
       const y = centroid.y * canvas.height;
       
-      // Draw text with outline for better visibility
       ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
     });
@@ -128,15 +133,25 @@ function App() {
     const y = (event.clientY - rect.top) / canvas.clientHeight;
 
     // Find segment under cursor
-    const hoveredSegment = uploadResult.segments.find(segment => {
+    const segment = uploadResult.segments.find(segment => {
       return isPointInPolygon({ x, y }, segment.mask);
     });
 
-    setHoveredSegment(hoveredSegment?.id ?? null);
+    setHoveredSegment(segment?.id ?? null);
+    
+    if (segment) {
+      setTooltipPosition({
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+      });
+    } else {
+      setTooltipPosition(null);
+    }
   };
 
   const handleCanvasMouseLeave = () => {
     setHoveredSegment(null);
+    setTooltipPosition(null);
   };
 
   // Helper function to check if a point is inside a polygon
@@ -180,6 +195,7 @@ function App() {
                 <div className="segmented-image">
                   <canvas
                     ref={(canvas) => {
+                      canvasRef.current = canvas;
                       if (canvas && uploadResult) {
                         const img = new Image();
                         img.onload = () => {
@@ -192,6 +208,43 @@ function App() {
                     onMouseLeave={handleCanvasMouseLeave}
                     className="rug-image"
                   />
+                  {imageSize && hoveredSegment && (
+                    <svg
+                      className="segment-highlight active"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        pointerEvents: 'none'
+                      }}
+                      viewBox={`0 0 ${imageSize.width} ${imageSize.height}`}
+                      preserveAspectRatio="none"
+                    >
+                      {uploadResult?.segments
+                        .filter(s => s.id === hoveredSegment)
+                        .map(segment => (
+                          <path
+                            key={segment.id}
+                            d={`M ${segment.mask.map(p => 
+                              `${p.x * imageSize.width},${p.y * imageSize.height}`
+                            ).join(' L ')} Z`}
+                          />
+                        ))}
+                    </svg>
+                  )}
+                  {tooltipPosition && hoveredSegment && (
+                    <div
+                      className="segment-tooltip"
+                      style={{
+                        left: `${tooltipPosition.x}px`,
+                        top: `${tooltipPosition.y}px`,
+                      }}
+                    >
+                      {hoveredSegment}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
