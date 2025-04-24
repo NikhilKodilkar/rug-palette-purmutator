@@ -225,6 +225,12 @@ def find_contours(image: np.ndarray) -> List[Dict]:
         segments = []
         total_area = h * w
         
+        # Sort masks by area (largest first) to prioritize larger segments
+        masks_data.sort(key=lambda x: x['area'], reverse=True)
+        
+        # Keep track of covered pixels to avoid duplicates
+        covered_pixels = np.zeros((h, w), dtype=bool)
+        
         for i, mask_info in enumerate(masks_data):
             mask = mask_info['segmentation']
             score = mask_info['predicted_iou']
@@ -233,8 +239,20 @@ def find_contours(image: np.ndarray) -> List[Dict]:
             # Filter by relative area
             if area < total_area * SEGMENTATION_CONFIG["min_relative_area"]:
                 continue
+            
+            # Check overlap with existing segments
+            overlap = np.logical_and(covered_pixels, mask)
+            overlap_ratio = overlap.sum() / mask.sum()
+            
+            # Skip if more than 80% of the segment overlaps with existing segments
+            if overlap_ratio > 0.8:
+                logger.info(f"Skipping segment {i} due to {overlap_ratio:.1%} overlap with existing segments")
+                continue
                 
             logger.info(f"Processing segment {i}: Area={area}, Predicted IoU={score:.3f}")
+            
+            # Update covered pixels
+            covered_pixels = np.logical_or(covered_pixels, mask)
             
             # Find contours in the mask
             mask_uint8 = mask.astype(np.uint8) * 255

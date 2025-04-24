@@ -37,6 +37,24 @@ function App() {
 
   const handleUploadSuccess = (responseData: UploadResponse) => {
     console.log('[Frontend] Raw data received from backend:', responseData);
+    
+    // Debug: Check for potentially duplicate segments
+    const segmentMap = new Map();
+    responseData.segments.forEach(segment => {
+      // Create a key based on the segment's points to identify duplicates
+      const pointKey = segment.mask
+        .map(p => `${Math.round(p.x * 1000)},${Math.round(p.y * 1000)}`)
+        .join('|');
+      
+      if (segmentMap.has(pointKey)) {
+        console.warn(`[Frontend] Potential duplicate segment found:`, {
+          existing: segmentMap.get(pointKey),
+          duplicate: segment
+        });
+      }
+      segmentMap.set(pointKey, segment);
+    });
+
     console.log('[Frontend] Processing data for display:', {
       filename: responseData.filename,
       segmentsCount: responseData.segments.length,
@@ -132,11 +150,17 @@ function App() {
     const x = (event.clientX - rect.left) / canvas.clientWidth;
     const y = (event.clientY - rect.top) / canvas.clientHeight;
 
-    // Find segment under cursor
-    const segment = uploadResult.segments.find(segment => {
-      return isPointInPolygon({ x, y }, segment.mask);
-    });
+    // Find all segments under cursor
+    const matchingSegments = uploadResult.segments.filter(segment => 
+      isPointInPolygon({ x, y }, segment.mask)
+    );
 
+    if (matchingSegments.length > 1) {
+      console.warn('[Frontend] Multiple segments found at point:', { x, y }, matchingSegments);
+    }
+
+    // Use the first matching segment (we'll fix the backend to prevent duplicates)
+    const segment = matchingSegments[0];
     setHoveredSegment(segment?.id ?? null);
     
     if (segment) {
